@@ -1,3 +1,4 @@
+This is made and compiled for my other project [llamate](https://github.com/R-Dson/llamate).
 
 ## Llama-swap with patches from [kooshi/llama-swappo](https://github.com/kooshi/llama-swappo).
 
