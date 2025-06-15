@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"runtime"
 )
 
 func TestConfig_Load(t *testing.T) {
@@ -78,6 +79,10 @@ groups:
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
+	cmdStop := ""
+	if runtime.GOOS == "windows" {
+		cmdStop = "taskkill /f /t /pid ${PID}"
+	}
 
 	expected := Config{
 		StartPort: 5800,
@@ -88,6 +93,7 @@ groups:
 		Models: map[string]ModelConfig{
 			"model1": {
 				Cmd:           "path/to/cmd --arg1 one",
+				CmdStop:       cmdStop,
 				Proxy:         "http://localhost:8080",
 				Aliases:       []string{"m1", "model-one"},
 				Env:           []string{"VAR1=value1", "VAR2=value2"},
@@ -99,6 +105,7 @@ groups:
 			},
 			"model2": {
 				Cmd:           "path/to/server --arg1 one",
+				CmdStop:       cmdStop,
 				Proxy:         "http://localhost:8081",
 				Aliases:       []string{"m2"},
 				Env:           []string{},
@@ -107,6 +114,7 @@ groups:
 			},
 			"model3": {
 				Cmd:           "path/to/cmd --arg1 one",
+				CmdStop:       cmdStop,
 				Proxy:         "http://localhost:8081",
 				Aliases:       []string{"mthree"},
 				Env:           []string{},
@@ -115,6 +123,7 @@ groups:
 			},
 			"model4": {
 				Cmd:           "path/to/cmd --arg1 one",
+				CmdStop:       cmdStop,
 				Proxy:         "http://localhost:8082",
 				Aliases:       []string{},
 				Env:           []string{},
