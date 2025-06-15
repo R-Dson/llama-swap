@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,6 +81,7 @@ groups:
 
 	expected := Config{
 		StartPort: 5800,
+		LogLevel: "info",
 		Macros: map[string]string{
 			"svr-path": "path/to/server",
 		},
@@ -98,7 +101,7 @@ groups:
 				Cmd:           "path/to/server --arg1 one",
 				Proxy:         "http://localhost:8081",
 				Aliases:       []string{"m2"},
-				Env:           nil,
+				Env:           []string{},
 				CheckEndpoint: "/",
 				Metadata:      MetadataConfig{},
 			},
@@ -106,13 +109,15 @@ groups:
 				Cmd:           "path/to/cmd --arg1 one",
 				Proxy:         "http://localhost:8081",
 				Aliases:       []string{"mthree"},
-				Env:           nil,
+				Env:           []string{},
 				CheckEndpoint: "/",
 				Metadata:      MetadataConfig{},
 			},
 			"model4": {
 				Cmd:           "path/to/cmd --arg1 one",
 				Proxy:         "http://localhost:8082",
+				Aliases:       []string{},
+				Env:           []string{},
 				CheckEndpoint: "/",
 				Metadata:      MetadataConfig{},
 			},
