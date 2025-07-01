@@ -39,6 +39,10 @@ type ModelConfig struct {
 	UseModelName  string         `yaml:"useModelName"`
 	Metadata      MetadataConfig `yaml:"metadata"`
 
+	// #179 for /v1/models
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+
 	// Limit concurrency of HTTP requests to process
 	ConcurrencyLimit int `yaml:"concurrencyLimit"`
 
@@ -59,6 +63,8 @@ func (m *ModelConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		Unlisted:         false,
 		UseModelName:     "",
 		ConcurrencyLimit: 0,
+		Name:             "",
+		Description:      "",
 	}
 
 	// the default cmdStop to taskkill /f /t /pid ${PID}
