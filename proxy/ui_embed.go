@@ -6,6 +6,7 @@ import (
 	"net/http"
 )
 
+//go:embed ui_dist
 var reactStaticFS embed.FS
 
 // GetReactFS returns the embedded React filesystem
