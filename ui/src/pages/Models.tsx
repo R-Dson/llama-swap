@@ -1,24 +1,16 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useAPI } from "../contexts/APIProvider";
 import { LogPanel } from "./LogViewer";
-import { processEvalTimes } from "../lib/Utils";
 import { usePersistentState } from "../hooks/usePersistentState";
 
 export default function ModelsPage() {
-  const { models, unloadAllModels, loadModel, upstreamLogs, enableAPIEvents } = useAPI();
+  const { models, unloadAllModels, loadModel, upstreamLogs, metrics } = useAPI();
   const [isUnloading, setIsUnloading] = useState(false);
   const [showUnlisted, setShowUnlisted] = usePersistentState("showUnlisted", true);
 
   const filteredModels = useMemo(() => {
     return models.filter((model) => showUnlisted || !model.unlisted);
   }, [models, showUnlisted]);
-
-  useEffect(() => {
-    enableAPIEvents(true);
-    return () => {
-      enableAPIEvents(false);
-    };
-  }, []);
 
   const handleUnloadAllModels = useCallback(async () => {
     setIsUnloading(true);
@@ -34,9 +26,15 @@ export default function ModelsPage() {
     }
   }, []);
 
-  const [totalLines, totalTokens, avgTokensPerSecond] = useMemo(() => {
-    return processEvalTimes(upstreamLogs);
-  }, [upstreamLogs]);
+  const [totalRequests, totalTokens, avgTokensPerSecond] = useMemo(() => {
+    const totalRequests = metrics.length;
+    if (totalRequests === 0) {
+      return [0, 0, 0];
+    }
+    const totalTokens = metrics.reduce((sum, m) => sum + m.output_tokens, 0);
+    const avgTokensPerSecond = (metrics.reduce((sum, m) => sum + m.tokens_per_second, 0) / totalRequests).toFixed(2);
+    return [totalRequests, totalTokens, avgTokensPerSecond];
+  }, [metrics]);
 
   return (
     <div>
@@ -96,14 +94,13 @@ export default function ModelsPage() {
 
         {/* Right Column */}
         <div className="w-full md:w-1/2 flex flex-col" style={{ height: "calc(100vh - 125px)" }}>
-          <div className="card mb-4 min-h-[250px]">
-            <h2>Log Stats</h2>
-            <p className="italic my-2">note: eval logs from llama-server</p>
+          <div className="card mb-4 min-h-[225px]">
+            <h2>Chat Activity</h2>
             <table className="w-full border border-gray-200">
               <tbody>
                 <tr className="border-b border-gray-200">
                   <td className="py-2 px-4 font-medium border-r border-gray-200">Requests</td>
-                  <td className="py-2 px-4 text-right">{totalLines}</td>
+                  <td className="py-2 px-4 text-right">{totalRequests}</td>
                 </tr>
                 <tr className="border-b border-gray-200">
                   <td className="py-2 px-4 font-medium border-r border-gray-200">Total Tokens Generated</td>

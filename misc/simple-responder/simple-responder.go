@@ -35,20 +35,90 @@ func main() {
 
 	// Set up the handler function using the provided response message
 	r.POST("/v1/chat/completions", func(c *gin.Context) {
-		c.Header("Content-Type", "application/json")
-
-		// add a wait to simulate a slow query
-		if wait, err := time.ParseDuration(c.Query("wait")); err == nil {
-			time.Sleep(wait)
-		}
-
 		bodyBytes, _ := io.ReadAll(c.Request.Body)
 
-		c.JSON(http.StatusOK, gin.H{
-			"responseMessage":  *responseMessage,
-			"h_content_length": c.Request.Header.Get("Content-Length"),
-			"request_body":     string(bodyBytes),
-		})
+		// Check if streaming is requested
+		// Query is checked instead of JSON body since that event stream conflicts with other tests
+		isStreaming := c.Query("stream") == "true"
+
+		if isStreaming {
+			// Set headers for streaming
+			c.Header("Content-Type", "text/event-stream")
+			c.Header("Cache-Control", "no-cache")
+			c.Header("Connection", "keep-alive")
+			c.Header("Transfer-Encoding", "chunked")
+
+			// add a wait to simulate a slow query
+			if wait, err := time.ParseDuration(c.Query("wait")); err == nil {
+				time.Sleep(wait)
+			}
+
+			// Send 10 "asdf" tokens
+			for i := 0; i < 10; i++ {
+				data := gin.H{
+					"created": time.Now().Unix(),
+					"choices": []gin.H{
+						{
+							"index": 0,
+							"delta": gin.H{
+								"content": "asdf",
+							},
+							"finish_reason": nil,
+						},
+					},
+				}
+				c.SSEvent("message", data)
+				c.Writer.Flush()
+			}
+
+			// Send final data with usage info
+			finalData := gin.H{
+				"usage": gin.H{
+					"completion_tokens": 10,
+					"prompt_tokens":     25,
+					"total_tokens":      35,
+				},
+				// add timings to simulate llama.cpp
+				"timings": gin.H{
+					"prompt_n":             25,
+					"prompt_ms":            13,
+					"predicted_n":          10,
+					"predicted_ms":         17,
+					"predicted_per_second": 10,
+				},
+			}
+			c.SSEvent("message", finalData)
+			c.Writer.Flush()
+
+			// Send [DONE]
+			c.SSEvent("message", "[DONE]")
+			c.Writer.Flush()
+		} else {
+			c.Header("Content-Type", "application/json")
+
+			// add a wait to simulate a slow query
+			if wait, err := time.ParseDuration(c.Query("wait")); err == nil {
+				time.Sleep(wait)
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"responseMessage":  *responseMessage,
+				"h_content_length": c.Request.Header.Get("Content-Length"),
+				"request_body":     string(bodyBytes),
+				"usage": gin.H{
+					"completion_tokens": 10,
+					"prompt_tokens":     25,
+					"total_tokens":      35,
+				},
+				"timings": gin.H{
+					"prompt_n":             25,
+					"prompt_ms":            13,
+					"predicted_n":          10,
+					"predicted_ms":         17,
+					"predicted_per_second": 10,
+				},
+			})
+		}
 	})
 
 	// for issue #62 to check model name strips profile slug
@@ -74,6 +144,11 @@ func main() {
 		c.Header("Content-Type", "application/json")
 		c.JSON(http.StatusOK, gin.H{
 			"responseMessage": *responseMessage,
+			"usage": gin.H{
+				"completion_tokens": 10,
+				"prompt_tokens":     25,
+				"total_tokens":      35,
+			},
 		})
 
 	})
