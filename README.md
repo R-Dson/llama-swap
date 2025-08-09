@@ -1,3 +1,65 @@
+
+# This is a mirror of [https://github.com/kooshi/llama-swappo](https://github.com/kooshi/llama-swappo).
+
+# llama-swappo
+
+A fork of llama-swap with a minimally implemented ollama compatible api grafted onto it, so you can use it with clients that only support ollama.
+
+This makes llama-swappo a drop in replacement for ollama, for enthusiests that want more control, with more compatability.
+
+This commit automatically rebases onto the latest llama-swap nightly.
+
+## Features
+
+- ✅ Ollama API supported endpoints:
+  - `HEAD /` - for health check
+  - `api/tags` - to list models
+  - `api/show` - for model details
+  - `api/ps` - to show what's running
+  - `api/generate` (untested, clients I've used so far seem to use the OpenAI compatible endpoints for actual generation and chat)
+  - `api/chat` (untested)
+  - `api/embed`
+  - `api/embeddings`
+
+## How to install
+Use the original [Building from source](#building-from-source) instructions, and overwrite your installed llama-swap executable with the newly built one.
+
+## Configuration
+
+If you're using llama-server, it will try to parse your arguments for the additional metadata it needs like context length.
+Alternatively, you can define the values in your config, which will override the inferred values.
+
+```yaml
+model1:
+  cmd: path/to/cmd --arg1 one
+  proxy: "http://localhost:8080"
+
+  # these
+  metadata:
+    architecture: qwen3
+    contextLength: 131072
+    capabilities:
+    - completion # for chat models
+    - tools # for tool use (requires --jinja in llama-server, and you must compile with this PR included https://github.com/ggml-org/llama.cpp/pull/12379)
+    - insert # for FITM coding, untested
+    - vision # untested
+    - embedding #untested
+    family: qwen # probably not needed
+    parameterSize: 32B # probably not needed
+    quantizationLevel: 4Q_K_M # probably not needed
+```
+
+## Support
+
+This was a personal tweak so I could play with local models in Github Copilot without having to deal with ollama.
+I offered to merge this into the upstream repo, but the maintainer decided, and I agree, that this change overcomplicates the elegance of llama-swap, and would be too much of a burden to maintain forever.
+My interests have already swung back to some other projects, so I don't intend to support this seriously.
+I won't be providing docker images or anything else.
+I'll accept pull requests if you fix something though.
+
+# Original README follows
+---
+
 ![llama-swap header image](header2.png)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/mostlygeek/llama-swap/total)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/mostlygeek/llama-swap/go-ci.yml)
@@ -75,13 +137,9 @@ See the [configuration documentation](https://github.com/mostlygeek/llama-swap/w
 
 ## Web UI
 
-llama-swap includes a real time web interface for monitoring logs and models:
+llama-swap ships with a real time web interface to monitor logs and status of models:
 
-<img width="1360" height="963" alt="image" src="https://github.com/user-attachments/assets/adef4a8e-de0b-49db-885a-8f6dedae6799" />
-
-The Activity Page shows recent requests:
-
-<img width="1360" height="963" alt="image" src="https://github.com/user-attachments/assets/5f3edee6-d03a-4ae5-ae06-b20ac1f135bd" />
+<img width="1786" height="1334" alt="image" src="https://github.com/user-attachments/assets/d6258cb9-1dad-40db-828f-2be860aec8fe" />
 
 ## Installation
 
