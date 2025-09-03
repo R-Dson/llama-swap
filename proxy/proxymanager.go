@@ -97,8 +97,7 @@ func New(config Config) *ProxyManager {
 	}
 
 	pm.setupGinEngine()
-<<<<<<< HEAD
-<<<<<<< HEAD
+	pm.RegisterOllamaRoutes()
 
 	// run any startup hooks
 	if len(config.Hooks.OnStartup.Preload) > 0 {
@@ -128,47 +127,6 @@ func New(config Config) *ProxyManager {
 		}()
 	}
 
-=======
-	pm.RegisterOllamaRoutes()
-<<<<<<< HEAD
->>>>>>> dbc4a71 (update to mirror)
-=======
-=======
-	pm.RegisterOllamaRoutes()
->>>>>>> 7fb36bb5183b5a665596179250493b9b8f25e63a
-
-	// run any startup hooks
-	if len(config.Hooks.OnStartup.Preload) > 0 {
-		// do it in the background, don't block startup -- not sure if good idea yet
-		go func() {
-			discardWriter := &DiscardWriter{}
-			for _, realModelName := range config.Hooks.OnStartup.Preload {
-				proxyLogger.Infof("Preloading model: %s", realModelName)
-				processGroup, _, err := pm.swapProcessGroup(realModelName)
-
-				if err != nil {
-					event.Emit(ModelPreloadedEvent{
-						ModelName: realModelName,
-						Success:   false,
-					})
-					proxyLogger.Errorf("Failed to preload model %s: %v", realModelName, err)
-					continue
-				} else {
-					req, _ := http.NewRequest("GET", "/", nil)
-					processGroup.ProxyRequest(realModelName, discardWriter, req)
-					event.Emit(ModelPreloadedEvent{
-						ModelName: realModelName,
-						Success:   true,
-					})
-				}
-			}
-		}()
-	}
-
-<<<<<<< HEAD
->>>>>>> 7fb36bb (update to mirror)
-=======
->>>>>>> 7fb36bb5183b5a665596179250493b9b8f25e63a
 	return pm
 }
 
