@@ -149,6 +149,14 @@ func (c *GroupConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
+type HooksConfig struct {
+	OnStartup HookOnStartup `yaml:"on_startup"`
+}
+
+type HookOnStartup struct {
+	Preload []string `yaml:"preload"`
+}
+
 type Config struct {
 	HealthCheckTimeout int                    `yaml:"healthCheckTimeout"`
 	LogRequests        bool                   `yaml:"logRequests"`
@@ -166,6 +174,9 @@ type Config struct {
 
 	// automatic port assignments
 	StartPort int `yaml:"startPort"`
+
+	// hooks, see: #209
+	Hooks HooksConfig `yaml:"hooks"`
 }
 
 func (c *Config) RealModelName(search string) (string, bool) {
@@ -237,7 +248,7 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 
 	- name must fit the regex ^[a-zA-Z0-9_-]+$
 	- names must be less than 64 characters (no reason, just cause)
-	- name can not be any reserved macros: PORT
+	- name can not be any reserved macros: PORT, MODEL_ID
 	- macro values must be less than 1024 characters
 	*/
 	macroNameRegex := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -253,6 +264,7 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		}
 		switch macroName {
 		case "PORT":
+		case "MODEL_ID":
 			return Config{}, fmt.Errorf("macro name '%s' is reserved and cannot be used", macroName)
 		}
 	}
@@ -294,6 +306,11 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 			modelConfig.CmdStop = strings.ReplaceAll(modelConfig.CmdStop, "${PORT}", nextPortStr)
 			modelConfig.Proxy = strings.ReplaceAll(modelConfig.Proxy, "${PORT}", nextPortStr)
 			nextPort++
+		}
+
+		if strings.Contains(modelConfig.Cmd, "${MODEL_ID}") || strings.Contains(modelConfig.CmdStop, "${MODEL_ID}") {
+			modelConfig.Cmd = strings.ReplaceAll(modelConfig.Cmd, "${MODEL_ID}", modelId)
+			modelConfig.CmdStop = strings.ReplaceAll(modelConfig.CmdStop, "${MODEL_ID}", modelId)
 		}
 
 		// make sure there are no unknown macros that have not been replaced
@@ -339,6 +356,22 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 			}
 			memberUsage[member] = groupID
 		}
+	}
+
+	// clean up hooks preload
+	if len(config.Hooks.OnStartup.Preload) > 0 {
+		var toPreload []string
+		for _, modelID := range config.Hooks.OnStartup.Preload {
+			modelID = strings.TrimSpace(modelID)
+			if modelID == "" {
+				continue
+			}
+			if real, found := config.RealModelName(modelID); found {
+				toPreload = append(toPreload, real)
+			}
+		}
+
+		config.Hooks.OnStartup.Preload = toPreload
 	}
 
 	return config, nil

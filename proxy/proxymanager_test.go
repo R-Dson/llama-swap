@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/mostlygeek/llama-swap/event"
 	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/gjson"
 )
@@ -40,7 +42,6 @@ func TestProxyManager_SwapProcessCorrectly(t *testing.T) {
 		assert.Contains(t, w.Body.String(), modelName)
 	}
 }
-
 func TestProxyManager_SwapMultiProcess(t *testing.T) {
 	config := AddDefaultGroupToConfig(Config{
 		HealthCheckTimeout: 15,
@@ -280,48 +281,48 @@ func TestProxyManager_ListModelsHandler(t *testing.T) {
 }
 
 func TestProxyManager_ListModelsHandler_SortedByID(t *testing.T) {
-    // Intentionally add models in non-sorted order and with an unlisted model
-    config := Config{
-        HealthCheckTimeout: 15,
-        Models: map[string]ModelConfig{
-            "zeta":   getTestSimpleResponderConfig("zeta"),
-            "alpha":  getTestSimpleResponderConfig("alpha"),
-            "beta":   getTestSimpleResponderConfig("beta"),
-            "hidden": func() ModelConfig {
-                mc := getTestSimpleResponderConfig("hidden")
-                mc.Unlisted = true
-                return mc
-            }(),
-        },
-        LogLevel: "error",
-    }
+	// Intentionally add models in non-sorted order and with an unlisted model
+	config := Config{
+		HealthCheckTimeout: 15,
+		Models: map[string]ModelConfig{
+			"zeta":  getTestSimpleResponderConfig("zeta"),
+			"alpha": getTestSimpleResponderConfig("alpha"),
+			"beta":  getTestSimpleResponderConfig("beta"),
+			"hidden": func() ModelConfig {
+				mc := getTestSimpleResponderConfig("hidden")
+				mc.Unlisted = true
+				return mc
+			}(),
+		},
+		LogLevel: "error",
+	}
 
-    proxy := New(config)
+	proxy := New(config)
 
-    // Request models list
-    req := httptest.NewRequest("GET", "/v1/models", nil)
-    w := httptest.NewRecorder()
-    proxy.ServeHTTP(w, req)
+	// Request models list
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	w := httptest.NewRecorder()
+	proxy.ServeHTTP(w, req)
 
-    assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusOK, w.Code)
 
-    var response struct {
-        Data []map[string]interface{} `json:"data"`
-    }
-    if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-        t.Fatalf("Failed to parse JSON response: %v", err)
-    }
+	var response struct {
+		Data []map[string]interface{} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse JSON response: %v", err)
+	}
 
-    // We expect only the listed models in sorted order by id
-    expectedOrder := []string{"alpha", "beta", "zeta"}
-    if assert.Len(t, response.Data, len(expectedOrder), "unexpected number of listed models") {
-        got := make([]string, 0, len(response.Data))
-        for _, m := range response.Data {
-            id, _ := m["id"].(string)
-            got = append(got, id)
-        }
-        assert.Equal(t, expectedOrder, got, "models should be sorted by id ascending")
-    }
+	// We expect only the listed models in sorted order by id
+	expectedOrder := []string{"alpha", "beta", "zeta"}
+	if assert.Len(t, response.Data, len(expectedOrder), "unexpected number of listed models") {
+		got := make([]string, 0, len(response.Data))
+		for _, m := range response.Data {
+			id, _ := m["id"].(string)
+			got = append(got, id)
+		}
+		assert.Equal(t, expectedOrder, got, "models should be sorted by id ascending")
+	}
 }
 
 func TestProxyManager_Shutdown(t *testing.T) {
@@ -656,21 +657,34 @@ func TestProxyManager_CORSOptionsHandler(t *testing.T) {
 }
 
 func TestProxyManager_Upstream(t *testing.T) {
-	config := AddDefaultGroupToConfig(Config{
-		HealthCheckTimeout: 15,
-		Models: map[string]ModelConfig{
-			"model1": getTestSimpleResponderConfig("model1"),
-		},
-		LogLevel: "error",
-	})
+	configStr := fmt.Sprintf(`
+logLevel: error
+models:
+  model1:
+    cmd: %s -port ${PORT} -silent -respond model1
+    aliases: [model-alias]
+`, getSimpleResponderPath())
+
+	config, err := LoadConfigFromReader(strings.NewReader(configStr))
+	assert.NoError(t, err)
 
 	proxy := New(config)
 	defer proxy.StopProcesses(StopWaitForInflightRequest)
-	req := httptest.NewRequest("GET", "/upstream/model1/test", nil)
-	rec := httptest.NewRecorder()
-	proxy.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "model1", rec.Body.String())
+	t.Run("main model name", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/upstream/model1/test", nil)
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "model1", rec.Body.String())
+	})
+
+	t.Run("model alias", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/upstream/model-alias/test", nil)
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "model1", rec.Body.String())
+	})
 }
 
 func TestProxyManager_ChatContentLength(t *testing.T) {
@@ -817,4 +831,85 @@ func TestProxyManager_HealthEndpoint(t *testing.T) {
 	proxy.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "OK", rec.Body.String())
+}
+
+// Ensure the custom llama-server /completion endpoint proxies correctly
+func TestProxyManager_CompletionEndpoint(t *testing.T) {
+	config := AddDefaultGroupToConfig(Config{
+		HealthCheckTimeout: 15,
+		Models: map[string]ModelConfig{
+			"model1": getTestSimpleResponderConfig("model1"),
+		},
+		LogLevel: "error",
+	})
+
+	proxy := New(config)
+	defer proxy.StopProcesses(StopWaitForInflightRequest)
+
+	reqBody := `{"model":"model1"}`
+	req := httptest.NewRequest("POST", "/completion", bytes.NewBufferString(reqBody))
+	w := httptest.NewRecorder()
+
+	proxy.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "model1")
+}
+
+func TestProxyManager_StartupHooks(t *testing.T) {
+
+	// using real YAML as the configuration has gotten more complex
+	// is the right approach as LoadConfigFromReader() does a lot more
+	// than parse YAML now. Eventually migrate all tests to use this approach
+	configStr := strings.Replace(`
+logLevel: error
+hooks:
+  on_startup:
+    preload:
+      - model1
+      - model2
+groups:
+  preloadTestGroup:
+    swap: false
+    members:
+       - model1
+       - model2
+models:
+  model1:
+    cmd: ${simpleresponderpath} --port ${PORT} --silent --respond model1
+  model2:
+      cmd: ${simpleresponderpath} --port ${PORT} --silent --respond model2
+`, "${simpleresponderpath}", simpleResponderPath, -1)
+
+	// Create a test model configuration
+	config, err := LoadConfigFromReader(strings.NewReader(configStr))
+	if !assert.NoError(t, err, "Invalid configuration") {
+		return
+	}
+
+	preloadChan := make(chan ModelPreloadedEvent, 2) // buffer for 2 expected events
+
+	unsub := event.On(func(e ModelPreloadedEvent) {
+		preloadChan <- e
+	})
+
+	defer unsub()
+
+	// Create the proxy which should trigger preloading
+	proxy := New(config)
+	defer proxy.StopProcesses(StopWaitForInflightRequest)
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-preloadChan:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for models to preload")
+		}
+	}
+	// make sure they are both loaded
+	_, foundGroup := proxy.processGroups["preloadTestGroup"]
+	if !assert.True(t, foundGroup, "preloadTestGroup should exist") {
+		return
+	}
+	assert.Equal(t, StateReady, proxy.processGroups["preloadTestGroup"].processes["model1"].CurrentState())
+	assert.Equal(t, StateReady, proxy.processGroups["preloadTestGroup"].processes["model2"].CurrentState())
 }
