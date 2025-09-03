@@ -98,6 +98,7 @@ func New(config Config) *ProxyManager {
 
 	pm.setupGinEngine()
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 	// run any startup hooks
 	if len(config.Hooks.OnStartup.Preload) > 0 {
@@ -132,6 +133,9 @@ func New(config Config) *ProxyManager {
 <<<<<<< HEAD
 >>>>>>> dbc4a71 (update to mirror)
 =======
+=======
+	pm.RegisterOllamaRoutes()
+>>>>>>> 7fb36bb5183b5a665596179250493b9b8f25e63a
 
 	// run any startup hooks
 	if len(config.Hooks.OnStartup.Preload) > 0 {
@@ -161,7 +165,10 @@ func New(config Config) *ProxyManager {
 		}()
 	}
 
+<<<<<<< HEAD
 >>>>>>> 7fb36bb (update to mirror)
+=======
+>>>>>>> 7fb36bb5183b5a665596179250493b9b8f25e63a
 	return pm
 }
 
