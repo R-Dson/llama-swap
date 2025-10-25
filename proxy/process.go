@@ -4,18 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/mostlygeek/llama-swap/event"
+	"github.com/mostlygeek/llama-swap/proxy/config"
 )
 
 type ProcessState string
@@ -38,11 +39,13 @@ const (
 )
 
 type Process struct {
-	ID     string
-	config ModelConfig
-	cmd    *exec.Cmd
+	ID           string
+	config       config.ModelConfig
+	cmd          *exec.Cmd
+	reverseProxy *httputil.ReverseProxy
 
 	// PR #155 called to cancel the upstream process
+	cmdMutex       sync.RWMutex
 	cancelUpstream context.CancelFunc
 
 	// closed when command exits
@@ -54,12 +57,14 @@ type Process struct {
 	healthCheckTimeout      int
 	healthCheckLoopInterval time.Duration
 
-	lastRequestHandled time.Time
+	lastRequestHandledMutex sync.RWMutex
+	lastRequestHandled      time.Time
 
 	stateMutex sync.RWMutex
 	state      ProcessState
 
-	inFlightRequests sync.WaitGroup
+	inFlightRequests      sync.WaitGroup
+	inFlightRequestsCount atomic.Int32
 
 	// used to block on multiple start() calls
 	waitStarting sync.WaitGroup
@@ -74,16 +79,35 @@ type Process struct {
 	failedStartCount int
 }
 
-func NewProcess(ID string, healthCheckTimeout int, config ModelConfig, processLogger *LogMonitor, proxyLogger *LogMonitor) *Process {
+func NewProcess(ID string, healthCheckTimeout int, config config.ModelConfig, processLogger *LogMonitor, proxyLogger *LogMonitor) *Process {
 	concurrentLimit := 10
 	if config.ConcurrencyLimit > 0 {
 		concurrentLimit = config.ConcurrencyLimit
+	}
+
+	// Setup the reverse proxy.
+	proxyURL, err := url.Parse(config.Proxy)
+	if err != nil {
+		proxyLogger.Errorf("<%s> invalid proxy URL %q: %v", ID, config.Proxy, err)
+	}
+
+	var reverseProxy *httputil.ReverseProxy
+	if proxyURL != nil {
+		reverseProxy = httputil.NewSingleHostReverseProxy(proxyURL)
+		reverseProxy.ModifyResponse = func(resp *http.Response) error {
+			// prevent nginx from buffering streaming responses (e.g., SSE)
+			if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+				resp.Header.Set("X-Accel-Buffering", "no")
+			}
+			return nil
+		}
 	}
 
 	return &Process{
 		ID:                      ID,
 		config:                  config,
 		cmd:                     nil,
+		reverseProxy:            reverseProxy,
 		cancelUpstream:          nil,
 		processLogger:           processLogger,
 		proxyLogger:             proxyLogger,
@@ -104,6 +128,20 @@ func NewProcess(ID string, healthCheckTimeout int, config ModelConfig, processLo
 // LogMonitor returns the log monitor associated with the process.
 func (p *Process) LogMonitor() *LogMonitor {
 	return p.processLogger
+}
+
+// setLastRequestHandled sets the last request handled time in a thread-safe manner.
+func (p *Process) setLastRequestHandled(t time.Time) {
+	p.lastRequestHandledMutex.Lock()
+	defer p.lastRequestHandledMutex.Unlock()
+	p.lastRequestHandled = t
+}
+
+// getLastRequestHandled gets the last request handled time in a thread-safe manner.
+func (p *Process) getLastRequestHandled() time.Time {
+	p.lastRequestHandledMutex.RLock()
+	defer p.lastRequestHandledMutex.RUnlock()
+	return p.lastRequestHandled
 }
 
 // custom error types for swapping state
@@ -129,6 +167,13 @@ func (p *Process) swapState(expectedState, newState ProcessState) (ProcessState,
 	}
 
 	p.state = newState
+
+	// Atomically increment waitStarting when entering StateStarting
+	// This ensures any thread that sees StateStarting will also see the WaitGroup counter incremented
+	if newState == StateStarting {
+		p.waitStarting.Add(1)
+	}
+
 	p.proxyLogger.Debugf("<%s> swapState() State transitioned from %s to %s", p.ID, expectedState, newState)
 	event.Emit(ProcessStateChangeEvent{ProcessName: p.ID, NewState: newState, OldState: expectedState})
 	return p.state, nil
@@ -155,6 +200,15 @@ func (p *Process) CurrentState() ProcessState {
 	p.stateMutex.RLock()
 	defer p.stateMutex.RUnlock()
 	return p.state
+}
+
+// forceState forces the process state to the new state with mutex protection.
+// This should only be used in exceptional cases where the normal state transition
+// validation via swapState() cannot be used.
+func (p *Process) forceState(newState ProcessState) {
+	p.stateMutex.Lock()
+	defer p.stateMutex.Unlock()
+	p.state = newState
 }
 
 // start starts the upstream command, checks the health endpoint, and sets the state to Ready
@@ -190,7 +244,7 @@ func (p *Process) start() error {
 		}
 	}
 
-	p.waitStarting.Add(1)
+	// waitStarting.Add(1) is now called atomically in swapState() when transitioning to StateStarting
 	defer p.waitStarting.Done()
 	cmdContext, ctxCancelUpstream := context.WithCancel(context.Background())
 
@@ -200,8 +254,11 @@ func (p *Process) start() error {
 	p.cmd.Env = append(p.cmd.Environ(), p.config.Env...)
 	p.cmd.Cancel = p.cmdStopUpstreamProcess
 	p.cmd.WaitDelay = p.gracefulStopTimeout
+
+	p.cmdMutex.Lock()
 	p.cancelUpstream = ctxCancelUpstream
 	p.cmdWaitChan = make(chan struct{})
+	p.cmdMutex.Unlock()
 
 	p.failedStartCount++ // this will be reset to zero when the process has successfully started
 
@@ -211,7 +268,7 @@ func (p *Process) start() error {
 	// Set process state to failed
 	if err != nil {
 		if curState, swapErr := p.swapState(StateStarting, StateStopped); swapErr != nil {
-			p.state = StateStopped // force it into a stopped state
+			p.forceState(StateStopped) // force it into a stopped state
 			return fmt.Errorf(
 				"failed to start command '%s' and state swap failed. command error: %v, current state: %v, state swap error: %v",
 				strings.Join(args, " "), err, curState, swapErr,
@@ -284,10 +341,12 @@ func (p *Process) start() error {
 					return
 				}
 
-				// wait for all inflight requests to complete and ticker
-				p.inFlightRequests.Wait()
+				// skip the TTL check if there are inflight requests
+				if p.inFlightRequestsCount.Load() != 0 {
+					continue
+				}
 
-				if time.Since(p.lastRequestHandled) > maxDuration {
+				if time.Since(p.getLastRequestHandled()) > maxDuration {
 					p.proxyLogger.Infof("<%s> Unloading model, TTL of %ds reached", p.ID, p.config.UnloadAfter)
 					p.Stop()
 					return
@@ -343,7 +402,7 @@ func (p *Process) Shutdown() {
 
 	p.stopCommand()
 	// just force it to this state since there is no recovery from shutdown
-	p.state = StateShutdown
+	p.forceState(StateShutdown)
 }
 
 // stopCommand will send a SIGTERM to the process and wait for it to exit.
@@ -354,13 +413,18 @@ func (p *Process) stopCommand() {
 		p.proxyLogger.Debugf("<%s> stopCommand took %v", p.ID, time.Since(stopStartTime))
 	}()
 
-	if p.cancelUpstream == nil {
+	p.cmdMutex.RLock()
+	cancelUpstream := p.cancelUpstream
+	cmdWaitChan := p.cmdWaitChan
+	p.cmdMutex.RUnlock()
+
+	if cancelUpstream == nil {
 		p.proxyLogger.Errorf("<%s> stopCommand has a nil p.cancelUpstream()", p.ID)
 		return
 	}
 
-	p.cancelUpstream()
-	<-p.cmdWaitChan
+	cancelUpstream()
+	<-cmdWaitChan
 }
 
 func (p *Process) checkHealthEndpoint(healthURL string) error {
@@ -417,8 +481,10 @@ func (p *Process) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.inFlightRequests.Add(1)
+	p.inFlightRequestsCount.Add(1)
 	defer func() {
-		p.lastRequestHandled = time.Now()
+		p.setLastRequestHandled(time.Now())
+		p.inFlightRequestsCount.Add(-1)
 		p.inFlightRequests.Done()
 	}()
 
@@ -433,56 +499,10 @@ func (p *Process) ProxyRequest(w http.ResponseWriter, r *http.Request) {
 		startDuration = time.Since(beginStartTime)
 	}
 
-	proxyTo := p.config.Proxy
-	client := &http.Client{}
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, proxyTo+r.URL.String(), r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	req.Header = r.Header.Clone()
-
-	contentLength, err := strconv.ParseInt(req.Header.Get("content-length"), 10, 64)
-	if err == nil {
-		req.ContentLength = contentLength
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
-	// prevent nginx from buffering streaming responses (e.g., SSE)
-	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
-		w.Header().Set("X-Accel-Buffering", "no")
-	}
-	w.WriteHeader(resp.StatusCode)
-
-	// faster than io.Copy when streaming
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				return
-			}
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
+	if p.reverseProxy != nil {
+		p.reverseProxy.ServeHTTP(w, r)
+	} else {
+		http.Error(w, fmt.Sprintf("No reverse proxy available for %s", p.ID), http.StatusInternalServerError)
 	}
 
 	totalTime := time.Since(requestBeginTime)
@@ -518,13 +538,16 @@ func (p *Process) waitForCmd() {
 	case StateStopping:
 		if curState, err := p.swapState(StateStopping, StateStopped); err != nil {
 			p.proxyLogger.Errorf("<%s> Process exited but could not swap to StateStopped. curState=%s, err: %v", p.ID, curState, err)
-			p.state = StateStopped
+			p.forceState(StateStopped)
 		}
 	default:
 		p.proxyLogger.Infof("<%s> process exited but not StateStopping, current state: %s", p.ID, currentState)
-		p.state = StateStopped // force it to be in this state
+		p.forceState(StateStopped) // force it to be in this state
 	}
+
+	p.cmdMutex.Lock()
 	close(p.cmdWaitChan)
+	p.cmdMutex.Unlock()
 }
 
 // cmdStopUpstreamProcess attemps to stop the upstream process gracefully
@@ -539,7 +562,7 @@ func (p *Process) cmdStopUpstreamProcess() error {
 
 	if p.config.CmdStop != "" {
 		// replace ${PID} with the pid of the process
-		stopArgs, err := SanitizeCommand(strings.ReplaceAll(p.config.CmdStop, "${PID}", fmt.Sprintf("%d", p.cmd.Process.Pid)))
+		stopArgs, err := config.SanitizeCommand(strings.ReplaceAll(p.config.CmdStop, "${PID}", fmt.Sprintf("%d", p.cmd.Process.Pid)))
 		if err != nil {
 			p.proxyLogger.Errorf("<%s> Failed to sanitize stop command: %v", p.ID, err)
 			return err

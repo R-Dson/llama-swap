@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mostlygeek/llama-swap/event"
+	"github.com/mostlygeek/llama-swap/proxy/config"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -27,7 +28,7 @@ const (
 type ProxyManager struct {
 	sync.RWMutex
 
-	config    Config
+	config    config.Config
 	ginEngine *gin.Engine
 
 	// logging
@@ -44,7 +45,7 @@ type ProxyManager struct {
 	shutdownCancel context.CancelFunc
 }
 
-func New(config Config) *ProxyManager {
+func New(config config.Config) *ProxyManager {
 	// set up loggers
 	stdoutLogger := NewLogMonitorWriter(os.Stdout)
 	upstreamLogger := NewLogMonitorWriter(stdoutLogger)
@@ -131,7 +132,15 @@ func New(config Config) *ProxyManager {
 }
 
 func (pm *ProxyManager) setupGinEngine() {
+
 	pm.ginEngine.Use(func(c *gin.Context) {
+
+		// don't log the Wake on Lan proxy health check
+		if c.Request.URL.Path == "/wol-health" {
+			c.Next()
+			return
+		}
+
 		// Start timer
 		start := time.Now()
 
@@ -232,6 +241,11 @@ func (pm *ProxyManager) setupGinEngine() {
 	pm.ginEngine.GET("/unload", pm.unloadAllModelsHandler)
 	pm.ginEngine.GET("/running", pm.listRunningProcessesHandler)
 	pm.ginEngine.GET("/health", func(c *gin.Context) {
+		c.String(http.StatusOK, "OK")
+	})
+
+	// see cmd/wol-proxy/wol-proxy.go, not logged
+	pm.ginEngine.GET("/wol-health", func(c *gin.Context) {
 		c.String(http.StatusOK, "OK")
 	})
 
@@ -399,6 +413,13 @@ func (pm *ProxyManager) listModelsHandler(c *gin.Context) {
 		}
 		if desc := strings.TrimSpace(modelConfig.Description); desc != "" {
 			record["description"] = desc
+		}
+
+		// Add metadata if present
+		if len(modelConfig.Metadata) > 0 {
+			record["meta"] = gin.H{
+				"llamaswap": modelConfig.Metadata,
+			}
 		}
 
 		data = append(data, record)
